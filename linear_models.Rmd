@@ -1,0 +1,298 @@
+---
+title: "linear_models"
+author: "Kino Watanabe"
+date: "2025-11-28"
+output: github_document
+---
+
+```{r, include = FALSE, message = FALSE, warning = FALSE}
+library(tidyverse)
+
+knitr::opts_chunk$set(
+	echo = TRUE,
+	warning = FALSE,
+  fig.width = 6,
+  fig.asp = .6,
+  out.width = "90%"
+)
+
+theme_set(theme_minimal() + theme(legend.position = "bottom"))
+
+options(
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis"
+)
+
+scale_colour_discrete = scale_colour_viridis_d
+scale_fill_discrete = scale_fill_viridis_d
+```
+
+Load key packages.
+
+```{r}
+library(tidyverse)
+library(p8105.datasets)
+```
+
+Load the NYC airbnb data.
+
+```{r}
+data(nyc_airbnb)
+```
+
+Look at the data / do some cleaning.
+
+```{r}
+nyc_airbnb = 
+  nyc_airbnb |> 
+  mutate(
+    stars = review_scores_location / 2
+  ) |> 
+  rename(
+    borough = neighbourhood_group
+  ) |> 
+  filter(borough != "Staten Island") |> 
+  select(price, stars, borough, room_type, neighbourhood)
+```
+
+Do regression!!!
+
+```{r}
+fit = lm(price ~ stars + borough, data = nyc_airbnb)
+fit
+```
+* Bronx came first alphabetically, so all boroughs are being compared to Bronx. 
+* Borough was a character variable. If you put a character variable in a regression, R forces it to be a factor.
+
+do some additional cleaning then refit.
+
+```{r}
+nyc_airbnb |> 
+  count(borough)
+
+nyc_airbnb = 
+  nyc_airbnb |> 
+  mutate(
+    borough = fct_infreq(borough),
+    room_type = fct_infreq(room_type)
+  )
+
+fit = lm(price ~ stars + borough, data = nyc_airbnb)
+fit
+```
+* shifted reference category of borough with `fct_infreq`
+
+Look at `lm` stuff
+
+```{r, eval = FALSE}
+summary(fit)
+names(summary(fit))
+summary(fit)[["coefficients"]]
+summary(fit)[["df"]]
+
+fitted.values(fit)
+resid(fit)
+```
+
+Look at cleaner `lm` stuff
+
+` broom::tidy()`  has functions for obtaining a quick summary of the model and for cleaning up the coefficient table.
+
+
+```{r}
+fit |> 
+  broom::tidy() |> 
+  mutate(
+    term = str_replace(term, "borough", "Borough: ")
+  ) |> 
+  select(term, estimate, p.value) |> 
+  knitr::kable(digits = 3)
+
+
+fit |> 
+  broom::glance()
+```
+
+
+## Diagnostics
+
+Look at residuals.
+
+* The `modelr` package can be used to add residuals and fitted values to a dataframe.
+
+```{r}
+nyc_airbnb |> 
+  modelr::add_residuals(fit) |> 
+  modelr::add_predictions(fit) |> 
+  filter(resid < 1000) |> 
+  ggplot(aes(x = resid)) + 
+  geom_histogram()
+
+
+nyc_airbnb |> 
+  modelr::add_residuals(fit) |> 
+  modelr::add_predictions(fit) |> 
+  filter(resid < 1000) |> 
+  ggplot(aes(x = borough, y = resid)) + 
+  geom_violin()
+
+nyc_airbnb |> 
+  modelr::add_residuals(fit) |> 
+  modelr::add_predictions(fit) |> 
+  filter(resid < 1000) |> 
+  ggplot(aes(x = stars, y = resid)) + 
+  geom_point()
+```
+
+
+
+## Hypothesis testing
+
+```{r}
+fit |> 
+  broom::tidy()
+```
+
+What about a categorical variable?
+
+```{r}
+fit_alt = lm(price ~ stars + borough + room_type, data = nyc_airbnb)
+fit_null = lm(price ~ stars + borough, data = nyc_airbnb)
+
+anova(fit_null, fit_alt) |> 
+  broom::tidy()
+```
+
+
+## Interactions vs nested data
+
+
+```{r}
+fit_interactions =
+  lm(price ~ stars * borough + room_type * borough, data = nyc_airbnb)
+
+
+fit_interactions |> 
+  broom::tidy()
+```
+
+
+Let's just look at Brooklyn first.
+
+```{r}
+nyc_airbnb |> 
+  filter(borough == "Brooklyn") |> 
+  lm(price ~ stars + room_type, data = _) |> 
+  broom::tidy()
+
+nyc_airbnb |> 
+  filter(borough == "Manhattan") |> 
+  lm(price ~ stars + room_type, data = _) |> 
+  broom::tidy()
+
+nyc_airbnb |> 
+  filter(borough == "Bronx") |> 
+  lm(price ~ stars + room_type, data = _) |> 
+  broom::tidy()
+
+nyc_airbnb |> 
+  filter(borough == "Queens") |> 
+  lm(price ~ stars + room_type, data = _) |> 
+  broom::tidy()
+
+```
+Too much repetition. Write a function.
+
+Write a short function
+
+```{r}
+lm_airbnb = function(df) {
+  
+  lm(price ~ stars + room_type, data = df)
+  
+}
+
+nyc_airbnb |> 
+  filter(borough == "Queens") |> 
+  lm_airbnb() |> 
+  broom::tidy()
+```
+
+Create a list of dataframes, and iterate to fit the model each time.
+
+```{r}
+nested_lm_results = 
+  nyc_airbnb |> 
+  nest(data = -borough) |> 
+  mutate(
+    fits = map(data, lm_airbnb),
+    results = map(fits, broom::tidy)
+  ) |> 
+  select(borough, results) |> 
+  unnest(results)
+```
+
+Do some untidying.
+
+```{r}
+nested_lm_results |> 
+  select(borough, term, estimate) |> 
+  pivot_wider(
+    names_from = term, 
+    values_from = estimate
+  )
+```
+
+
+Use an *anonymous* function instead of `lm_airbnb`
+
+```{r}
+nested_lm_results = 
+  nyc_airbnb |> 
+  nest(data = -borough) |> 
+  mutate(
+    fits = map(data, \(df) lm(price ~ stars + room_type, data = df)),
+    results = map(fits, broom::tidy)
+  ) |> 
+  select(borough, results) |> 
+  unnest(results)
+
+nested_lm_results |> 
+  select(borough, term, estimate) |> 
+  pivot_wider(
+    names_from = term, 
+    values_from = estimate
+  )
+```
+
+
+
+Let's do an even more extreme example!!
+
+```{r}
+manhattan_analysis =
+  nyc_airbnb |> 
+  filter(
+    borough == "Manhattan"
+  ) |> 
+  nest(data = -neighbourhood) |> 
+  mutate(
+    fits = map(data, \(df) lm(price ~ stars + room_type, data = df)),
+    results = map(fits, broom::tidy)
+  ) |> 
+  select(neighbourhood, results) |> 
+  unnest(results)
+```
+
+Make a plot
+
+```{r}
+manhattan_analysis |> 
+  filter(term == "stars") |> 
+  mutate(
+    neighbourhood = fct_reorder(neighbourhood, estimate)
+  ) |> 
+  ggplot(aes(x = neighbourhood, y = estimate)) + 
+  geom_point() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
